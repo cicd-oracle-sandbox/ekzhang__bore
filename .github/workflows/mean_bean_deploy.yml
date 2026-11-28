@@ -1,0 +1,190 @@
+on:
+  push:
+    # # Sequence of patterns matched against refs/tags
+    tags:
+      - "v*" # Push events to matching v*, i.e. v1.0, v20.15.10
+
+name: Mean Bean Deploy
+env:
+  BIN: bore
+
+permissions:
+  contents: write
+
+jobs:
+  # This job downloads and stores `cross` as an artifact, so that it can be
+  # redownloaded across all of the jobs. Currently this copied pasted between
+  # `mean_bean_ci.yml` and `mean_bean_deploy.yml`. Make sure to update both places when making
+  # changes.
+  install-cross:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+          persist-credentials: false
+
+      - name: Download cross
+        id: cross
+        run: |
+          gh release download -R rust-embedded/cross --pattern "${{ matrix.platform }}*" --dir /tmp/cross
+          echo "install_path=$(find /tmp/cross -type f -name 'cross*' | head -1)" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-${{ matrix.platform }}
+          path: ${{ steps.cross.outputs.install_path }}
+    strategy:
+      matrix:
+        platform: [linux-musl]
+
+  macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target:
+          # macOS
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    permissions:
+      contents: write
+    steps:
+      - name: Get tag
+        id: tag
+        run: echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Cache files between builds
+      - name: Setup | Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.target }}-${{ github.sha }}
+
+      - name: Setup | Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          override: true
+          profile: minimal
+          target: ${{ matrix.target }}
+
+      - name: Build | Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - run: tar -czvf ${{ env.BIN }}.tar.gz --directory=target/${{ matrix.target }}/release ${{ env.BIN }}
+      - name: Create Release
+        id: create_release
+        run: |
+          gh release create "${{ github.ref }}" --title "${{ github.ref }}" --notes "Release ${{ github.ref }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Release Asset
+        run: |
+          gh release upload "${{ github.ref }}" "${{ env.BIN }}.tar.gz#${{ env.BIN }}-${{ steps.tag.outputs.tag }}-${{ matrix.target }}.tar.gz"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  linux:
+    runs-on: ubuntu-latest
+    needs: install-cross
+    strategy:
+      matrix:
+        target:
+          - aarch64-unknown-linux-musl
+          - arm-unknown-linux-musleabi
+          - arm-unknown-linux-gnueabi
+          - armv7-unknown-linux-gnueabihf
+          - armv7-unknown-linux-musleabihf
+          - i686-unknown-linux-musl
+          - x86_64-unknown-linux-musl
+    permissions:
+      contents: write
+    steps:
+      - name: Get tag
+        id: tag
+        run: echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-linux-musl
+          path: /tmp/
+      - run: chmod +x /tmp/cross
+
+      - run: ci/set_rust_version.bash stable ${{ matrix.target }}
+      - run: ci/build.bash /tmp/cross ${{ matrix.target }} RELEASE
+      - run: tar -czvf ${{ env.BIN }}.tar.gz --directory=target/${{ matrix.target }}/release ${{ env.BIN }}
+
+      - name: Create Release
+        id: create_release
+        run: |
+          gh release create "${{ github.ref }}" --title "${{ github.ref }}" --notes "Release ${{ github.ref }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Release Asset
+        run: |
+          gh release upload "${{ github.ref }}" "${{ env.BIN }}.tar.gz#${{ env.BIN }}-${{ steps.tag.outputs.tag }}-${{ matrix.target }}.tar.gz"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows:
+    runs-on: windows-latest
+    needs: install-cross
+    strategy:
+      matrix:
+        target:
+          # MSVC
+          - i686-pc-windows-msvc
+          - x86_64-pc-windows-msvc
+          # GNU
+          # - i686-pc-windows-gnu
+          # - x86_64-pc-windows-gnu
+    permissions:
+      contents: write
+    steps:
+      - name: Get tag
+        id: tag
+        run: echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: bash ci/set_rust_version.bash stable ${{ matrix.target }}
+      - run: bash ci/build.bash cargo ${{ matrix.target }} RELEASE
+      - run: |
+          cd ./target/${{ matrix.target }}/release/
+          7z a "${{ env.BIN }}.zip" "${{ env.BIN }}.exe"
+          mv "${{ env.BIN }}.zip" $GITHUB_WORKSPACE
+        shell: bash
+        # We're using using a fork of `actions/create-release` that detects
+        # whether a release is already available or not first.
+      - name: Create Release
+        id: create_release
+        run: |
+          gh release create "${{ github.ref }}" --title "${{ github.ref }}" --notes "Release ${{ github.ref }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Release Asset
+        run: |
+          gh release upload "${{ github.ref }}" "${{ env.BIN }}.zip#${{ env.BIN }}-${{ steps.tag.outputs.tag }}-${{ matrix.target }}.zip"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
