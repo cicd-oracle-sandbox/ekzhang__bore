@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      checks: write  # for actions-rs/toolchain to create new checks
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+
+      - run: cargo build --all-features
+
+      - run: cargo test
+
+  rustfmt:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      checks: write  # for actions-rs/toolchain to create new checks
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: rustfmt
+
+      - run: cargo fmt -- --check
+
+  clippy:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      checks: write  # for actions-rs/toolchain to create new checks
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: clippy
+
+      - run: cargo clippy -- -D warnings
